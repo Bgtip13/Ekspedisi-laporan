@@ -1,0 +1,1027 @@
+"use client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+
+const PIN = "1305";
+const COLORS = ["#2563eb", "#16a34a", "#dc2626", "#f59e0b", "#7c3aed", "#0891b2"];
+const AREA_ORDER = ["GLOBAL", "SOC", "DIY", "SMG", "TAB"];
+const SUPABASE_URL = "https://jbgtshoewjlklpnakcng.supabase.co";
+const SUPABASE_KEY = "sb_publishable_WvlD_7xGiL_DGkO5Wpo3bg_SPX96NrJ";
+const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+const MONTH_FULL: Record<string, string> = { JAN: "JANUARI", FEB: "FEBRUARI", MAR: "MARET", APR: "APRIL", MEI: "MEI", JUN: "JUNI", JUNI: "JUNI", JUL: "JULI", JULI: "JULI", AGU: "AGUSTUS", AGUSTUS: "AGUSTUS", SEPT: "SEPTEMBER", SEPTEMBER: "SEPTEMBER", OKT: "OKTOBER", OKTOBER: "OKTOBER", NOV: "NOVEMBER", NOVEMBER: "NOVEMBER", DES: "DESEMBER", DESEMBER: "DESEMBER" };
+const MONTH_RE = /^(JAN|FEB|MAR|APR|MEI|JUN|JUNI|JUL|JULI|AGU|AGUSTUS|SEPT|SEPTEMBER|OKT|OKTOBER|NOV|NOVEMBER|DES|DESEMBER)$/;
+const MONTH_ORDER = ["JAN", "FEB", "MAR", "APR", "MEI", "JUN", "JUNI", "JUL", "JULI", "AGU", "AGUSTUS", "SEPT", "SEPTEMBER", "OKT", "OKTOBER", "NOV", "NOVEMBER", "DES", "DESEMBER"];
+
+const norm = (h: string) => h.toUpperCase().replace(/[^A-Z0-9]/g, "");
+function toNumber(raw: string): number | null {
+  if (raw.trim() === "") return null;
+  let s = raw.replace(/[^0-9,.\-]/g, "");
+  if (s === "" || s === "-" || s === "." || s === ",") return null;
+  if (s.includes(",") && s.includes(".")) s = s.replace(/\./g, "").replace(",", ".");
+  else if (s.includes(",")) { const p = s.split(","); s = p.length === 2 ? s.replace(",", ".") : s.replace(/,/g, ""); }
+  else if (s.includes(".")) s = s.replace(/\./g, "");
+  const n = Number(s);
+  return isNaN(n) ? null : n;
+}
+const fmtRp = (n: number) => "Rp " + Math.round(n).toLocaleString("id-ID");
+const fmtRpShort = (n: number) => {
+  const a = Math.abs(n);
+  if (a >= 1e9) return "Rp " + (n / 1e9).toLocaleString("id-ID", { maximumFractionDigits: 2 }) + " M";
+  if (a >= 1e6) return "Rp " + (n / 1e6).toLocaleString("id-ID", { maximumFractionDigits: 2 }) + " jt";
+  if (a >= 1e3) return "Rp " + (n / 1e3).toLocaleString("id-ID", { maximumFractionDigits: 1 }) + " rb";
+  return fmtRp(n);
+};
+const fmtPct = (n: number, d = 2) => n.toLocaleString("id-ID", { maximumFractionDigits: d }) + "%";
+const pctOf = (a: number, b: number) => (b > 0 ? (a / b) * 100 : 0);
+const axisFmt = (n: number) => (Math.abs(n) >= 1e9 ? (n / 1e9).toLocaleString("id-ID", { maximumFractionDigits: 1 }) + " M" : Math.abs(n) >= 1e6 ? (n / 1e6).toLocaleString("id-ID", { maximumFractionDigits: 1 }) + " jt" : Math.abs(n) >= 1e3 ? (n / 1e3).toLocaleString("id-ID", { maximumFractionDigits: 0 }) + " rb" : String(n));
+function parseCells(text: string): string[][] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (!lines.length) return [];
+  const delim = lines[0].includes("\t") ? "\t" : lines[0].includes(";") ? ";" : ",";
+  return lines.map((l) => l.split(delim).map((c) => c.trim()));
+}
+const currentMonthName = () => new Date().toLocaleDateString("id-ID", { month: "long" }).toUpperCase();
+const byAreaOrder = (a: string, b: string) => { const ia = AREA_ORDER.indexOf(a), ib = AREA_ORDER.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); };
+const jabatanOf = (area: string) => (area === "GLOBAL" ? "SPV" : area === "TAB" ? "TABUNGAN" : "ADM SALES");
+
+type BRow = { id: string; area: string; sdm: string; potensi: number; taTotal: number; contr: number; taNoo: number; reaktif: number; trip: number; tripKuota: number; tgt: number; act: number; pcp: number; kejar: number };
+type MRow = { id: string; area: string; sdm: string; tgt: number; act: number[]; pct: number[] };
+type TRow = { id: string; area: string; kab: string; kec: string; existing: string; pelanggan: string; adm: string; kelasToko: string; kelasByr: string; act: Record<string, number>; target: number };
+
+function parseBulanan(text: string): { rows: BRow[]; globalSdm: string } {
+  const cells = parseCells(text);
+  const hi = cells.findIndex((l) => l.some((c) => norm(c) === "AREA") && l.some((c) => norm(c).includes("NAMASDM")));
+  if (hi < 0) throw new Error("Header AREA / NAMA SDM tidak ditemukan. Salin dari kolom A ya.");
+  const h = cells[hi];
+  const gi = (k: string) => h.findIndex((c) => norm(c) === k);
+  const iArea = gi("AREA"), iSdm = gi("NAMASDM"), iPot = gi("POTENSITOKO"), iTa = gi("TATOTAL"), iNoo = gi("TANOO"), iReak = gi("TOKOREAKTIF"), iTrip = gi("TRIP"), iTripK = gi("TRIPKUOTA"), iTgt = gi("TGT"), iAct = gi("ACT");
+  const rows: BRow[] = [];
+  let gSdm = "";
+  for (let i = hi + 1; i < cells.length; i++) {
+    const line = cells[i];
+    const area = (line[iArea] || "").trim().toUpperCase();
+    if (!area) continue;
+    const sdm = (line[iSdm] || "").trim();
+    if (area === "GLOBAL") { gSdm = sdm || gSdm; continue; }
+    const num = (idx: number) => (idx >= 0 ? toNumber(line[idx] || "") || 0 : 0);
+    const pot = num(iPot), ta = num(iTa), tgt = num(iTgt), act = num(iAct);
+    rows.push({ id: area, area, sdm, potensi: pot, taTotal: ta, contr: pot > 0 ? (ta / pot) * 100 : 0, taNoo: num(iNoo), reaktif: num(iReak), trip: num(iTrip), tripKuota: num(iTripK), tgt, act, pcp: tgt > 0 ? (act / tgt) * 100 : 0, kejar: tgt - act });
+  }
+  return { rows, globalSdm: gSdm };
+}
+function parseMingguan(text: string): { rows: MRow[]; globalSdm: string } {
+  const cells = parseCells(text);
+  const hi = cells.findIndex((l) => l.some((c) => norm(c) === "AREA") && l.some((c) => norm(c).includes("NAMASDM")));
+  if (hi < 0) throw new Error("Header AREA / NAMA SDM tidak ditemukan.");
+  const h = cells[hi];
+  const gi = (k: string) => h.findIndex((c) => norm(c) === k);
+  const iArea = gi("AREA"), iSdm = gi("NAMASDM");
+  let iTgt = gi("TGTMGG"); if (iTgt < 0) iTgt = gi("TGT");
+  const actIdx: number[] = [], pctIdx: number[] = [];
+  for (let k = 1; k <= 5; k++) { actIdx.push(h.findIndex((c) => norm(c) === "ACTM" + k)); pctIdx.push(h.findIndex((c) => norm(c) === "M" + k)); }
+  const rows: MRow[] = [];
+  let gSdm = "";
+  for (let i = hi + 1; i < cells.length; i++) {
+    const line = cells[i];
+    const area = (line[iArea] || "").trim().toUpperCase();
+    if (!area) continue;
+    const sdm = (line[iSdm] || "").trim();
+    if (area === "GLOBAL") { gSdm = sdm || gSdm; continue; }
+    const tgt = iTgt >= 0 ? toNumber(line[iTgt] || "") || 0 : 0;
+    const act: number[] = [], pct: number[] = [];
+    for (let k = 0; k < 5; k++) {
+      const a = actIdx[k] >= 0 ? toNumber(line[actIdx[k]] || "") || 0 : 0;
+      const p = pctIdx[k] >= 0 ? toNumber(line[pctIdx[k]] || "") || 0 : 0;
+      act.push(a);
+      pct.push(a > 0 && p === 0 && tgt > 0 ? (a / tgt) * 100 : p);
+    }
+    rows.push({ id: area, area, sdm, tgt, act, pct });
+  }
+  return { rows, globalSdm: gSdm };
+}
+function parseToko(text: string): { rows: TRow[]; months: string[] } {
+  const cells = parseCells(text);
+  let h2 = -1;
+  for (let i = 0; i < cells.length; i++) {
+    const line = cells[i];
+    if (line.some((c) => MONTH_RE.test(norm(c))) && (line.some((c) => norm(c) === "TARGETTOKO") || line.some((c) => norm(c) === "MAXJUAL"))) { h2 = i; break; }
+  }
+  if (h2 < 0) throw new Error("Header bulan tidak ditemukan. Salin dari kolom A ya.");
+  const top = h2 > 0 ? cells[h2 - 1] : [];
+  const h: string[] = [];
+  const n = Math.max(cells[h2].length, top.length);
+  for (let i = 0; i < n; i++) {
+    const a = (cells[h2][i] || "").trim(), b = (top[i] || "").trim();
+    if (a) h.push(norm(b) === "KELAS" ? b + " " + a : a);
+    else h.push(b);
+  }
+  const gi = (k: string) => h.findIndex((c) => norm(c) === k);
+  const iArea = gi("AREA"), iKab = gi("KABUPATEN"), iKec = gi("KECAMATAN"), iExist = gi("EXISTING"), iPel = gi("PELANGGAN"), iAdm = gi("ADM"), iKelasT = gi("KELASTOKO"), iKelasB = gi("KELASBYR"), iTgt = gi("TARGETTOKO"), iMax = gi("MAXJUAL");
+  const pairs: [string, number][] = [];
+  h.forEach((c, i) => { const m = norm(c); if (MONTH_RE.test(m) && (iMax < 0 || i < iMax)) pairs.push([m, i]); });
+  pairs.sort((a, b) => MONTH_ORDER.indexOf(a[0]) - MONTH_ORDER.indexOf(b[0]));
+  const months = pairs.map((p) => p[0]);
+  const monthIdx = pairs.map((p) => p[1]);
+  const rows: TRow[] = [];
+  for (let i = h2 + 1; i < cells.length; i++) {
+    const line = cells[i];
+    const area = (line[iArea] || "").trim().toUpperCase();
+    const pel = (line[iPel] || "").trim();
+    if (!area && !pel) continue;
+    const act: Record<string, number> = {};
+    monthIdx.forEach((ci, k) => { act[months[k]] = toNumber(line[ci] || "") || 0; });
+    rows.push({ id: area + "-" + i, area: area || "—", kab: (line[iKab] || "").trim(), kec: (line[iKec] || "").trim(), existing: (line[iExist] || "").trim(), pelanggan: pel, adm: (line[iAdm] || "").trim(), kelasToko: (line[iKelasT] || "").trim(), kelasByr: (line[iKelasB] || "").trim(), act, target: iTgt >= 0 ? toNumber(line[iTgt] || "") || 0 : 0 });
+  }
+  return { rows, months };
+}
+function computeGlobal(rows: BRow[], sdm: string): BRow {
+  const ar = rows.filter((r) => r.area !== "GLOBAL");
+  const sum = (f: (r: BRow) => number) => ar.reduce((a, r) => a + (f(r) || 0), 0);
+  const tgt = sum((r) => r.tgt), act = sum((r) => r.act), pot = sum((r) => r.potensi), ta = sum((r) => r.taTotal);
+  return { id: "GLOBAL", area: "GLOBAL", sdm: sdm || "—", potensi: pot, taTotal: ta, contr: pot > 0 ? (ta / pot) * 100 : 0, taNoo: sum((r) => r.taNoo), reaktif: sum((r) => r.reaktif), trip: sum((r) => r.trip), tripKuota: sum((r) => r.tripKuota), tgt, act, pcp: tgt > 0 ? (act / tgt) * 100 : 0, kejar: tgt - act };
+}
+function computeGlobalM(rows: MRow[], sdm: string): MRow {
+  const ar = rows.filter((r) => r.area !== "GLOBAL");
+  const tgt = ar.reduce((s, r) => s + r.tgt, 0);
+  const act = [0, 0, 0, 0, 0];
+  ar.forEach((r) => r.act.forEach((a, i) => { act[i] += a; }));
+  const pct = act.map((a) => (tgt > 0 ? (a / tgt) * 100 : 0));
+  return { id: "GLOBAL", area: "GLOBAL", sdm: sdm || "—", tgt, act, pct };
+}
+function mergeRows<T extends { id: string; area: string }>(oldRows: T[], parsed: T[]): T[] {
+  const map = new Map<string, T>(oldRows.filter((r) => r.area !== "GLOBAL").map((r) => [r.area, r]));
+  parsed.forEach((r) => map.set(r.area, r));
+  return Array.from(map.values());
+}
+
+const Card = ({ children, className = "" }: any) => <div className={"rounded-xl border border-slate-200 bg-white shadow-sm " + className}>{children}</div>;
+const Btn = ({ c = "bg-blue-600 text-white", children, onClick, title }: any) => <button onClick={onClick} title={title} className={"rounded-lg px-3 py-1.5 text-xs font-semibold " + c}>{children}</button>;
+const Pill = ({ a, active, onClick }: { a: string; active: boolean; onClick: () => void }) => <button onClick={onClick} className={"whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium " + (active ? "bg-blue-600 text-white" : "border border-slate-300 bg-white text-slate-600")}>{a}</button>;
+const Th = ({ children, className = "" }: any) => <th className={"sticky top-0 z-10 whitespace-nowrap bg-slate-100 px-3 py-2 font-semibold text-slate-700 " + className}>{children}</th>;
+const Td = ({ children, className = "" }: any) => <td className={"px-3 py-2 " + className}>{children}</td>;
+const Field = ({ label, value, onChange, type = "text" }: any) => (
+  <label className="block">
+    <span className="text-[11px] font-medium text-slate-500">{label}</span>
+    <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="mt-0.5 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm text-slate-900" />
+  </label>
+);
+
+function StatCard({ label, value, red, small }: { label: string; value: string; red?: boolean; small?: boolean }) {
+  return (
+    <Card className="p-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</p>
+      <p className={"mt-1 font-bold " + (small ? "text-sm" : "text-base sm:text-lg") + (red ? " text-red-600" : " text-slate-900")}>{value}</p>
+    </Card>
+  );
+}
+
+function StatusBadge({ pcp }: { pcp: number }) {
+  let label: string, cls: string;
+  if (pcp >= 111) { label = "🏆 Outstanding"; cls = "bg-amber-500 text-white"; }
+  else if (pcp >= 101) { label = "🌟 High Performer"; cls = "bg-blue-500 text-white"; }
+  else if (pcp >= 91) { label = "✅ Target Tercapai"; cls = "bg-green-500 text-white"; }
+  else if (pcp >= 85) { label = "🎯 On Track"; cls = "bg-yellow-400 text-slate-800"; }
+  else if (pcp >= 76) { label = "📉 Perlu Dorongan"; cls = "bg-orange-500 text-white"; }
+  else if (pcp > 0) { label = "⚠️ Perlu Perhatian"; cls = "bg-red-500 text-white"; }
+  else { label = "❌ Belum Transaksi"; cls = "bg-slate-400 text-white"; }
+  return <span className={"inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold " + cls}>{label}</span>;
+}
+
+function Gauge({ value, label, sublabel, caption, color, badge }: { value: number; label: string; sublabel?: string; caption?: string; color?: string; badge?: string }) {
+  const c = color || (value >= 111 ? "#d97706" : value >= 101 ? "#2563eb" : value >= 91 ? "#16a34a" : value >= 85 ? "#eab308" : value >= 76 ? "#ea580c" : value > 0 ? "#dc2626" : "#94a3b8");
+  const pct = Math.max(0, Math.min(value, 100));
+  const R = 40;
+  const CIRC = 2 * Math.PI * R;
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      <div className="relative h-28 w-28 sm:h-32 sm:w-32">
+        <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90">
+          <circle cx="50" cy="50" r={R} fill="none" stroke="#e2e8f0" strokeWidth="10" />
+          <circle cx="50" cy="50" r={R} fill="none" stroke={c} strokeWidth="10" strokeLinecap="round" strokeDasharray={CIRC} strokeDashoffset={CIRC - (pct / 100) * CIRC} />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-lg font-bold sm:text-xl" style={{ color: c }}>{label}</span>
+          {sublabel && <span className="text-[11px] font-medium text-slate-500">{sublabel}</span>}
+        </div>
+      </div>
+      <div className="flex flex-col items-center gap-1">
+        {badge && <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold text-white shadow-sm" style={{ backgroundColor: c }}>{badge}</span>}
+        {caption && <p className="text-center text-xs text-slate-500">{caption}</p>}
+      </div>
+    </div>
+  );
+}
+
+function PinModal({ title, message, onCancel, onOk }: { title: string; message: string; onCancel: () => void; onOk: () => void }) {
+  const [pin, setPin] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-xs rounded-2xl bg-white p-5 shadow-2xl">
+        <h3 className="text-base font-bold text-slate-900">🔒 {title}</h3>
+        <p className="mt-1 text-xs text-slate-500">{message}</p>
+        <input autoFocus type="password" inputMode="numeric" placeholder="Masukkan PIN" value={pin} onChange={(e) => setPin(e.target.value)} className="mt-3 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-500" />
+        <div className="mt-4 flex justify-end gap-2">
+          <Btn c="border border-slate-300 bg-white text-slate-600" onClick={() => { setPin(""); onCancel(); }}>Batal</Btn>
+          <Btn onClick={() => { if (pin === PIN) { setPin(""); onOk(); } else { setPin(""); alert("PIN salah!"); } }}>OK</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PasteModal({ title, note, text, setText, error, onCancel, onPaste }: any) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl">
+        <h3 className="text-base font-bold text-slate-900">{title}</h3>
+        <p className="mt-1 text-xs text-slate-500">{note}</p>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={10} placeholder="Klik di sini lalu tekan Ctrl+V (paste dari Excel)" className="mt-3 w-full rounded-xl border border-slate-300 p-3 font-mono text-xs text-slate-900 outline-none focus:border-blue-500" />
+        {error && <p className="mt-2 text-xs font-medium text-red-600">{error}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <Btn c="border border-slate-300 bg-white text-slate-600" onClick={onCancel}>Batal</Btn>
+          <Btn onClick={onPaste}>Import Data</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StoreChartModal({ row, months, onClose }: { row: TRow; months: string[]; onClose: () => void }) {
+  const data = months.map((m) => ({ name: m, act: row.act[m] || 0 }));
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl">
+        <h3 className="text-sm font-bold text-slate-900 sm:text-base">{row.pelanggan} <span className="text-xs font-normal text-slate-500">({row.area} · {row.kab} · {row.kec})</span></h3>
+        <div className="mt-3 h-56 sm:h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tickFormatter={axisFmt} tick={{ fontSize: 10 }} width={62} />
+              <Tooltip formatter={(v: any) => fmtRp(Number(v))} />
+              <Bar dataKey="act" name="Aktual" fill="#2563eb" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="mt-3 flex justify-end"><Btn c="border border-slate-300 bg-white text-slate-600" onClick={onClose}>Tutup</Btn></div>
+      </div>
+    </div>
+  );
+}
+
+function EditBulananModal({ row, onClose, onSave }: { row: BRow; onClose: () => void; onSave: (r: BRow) => void }) {
+  const [f, setF] = useState({ area: row.area, sdm: row.sdm, potensi: String(row.potensi), taTotal: String(row.taTotal), taNoo: String(row.taNoo), reaktif: String(row.reaktif), trip: String(row.trip), tripKuota: String(row.tripKuota), tgt: String(row.tgt), act: String(row.act) });
+  const set = (k: string, v: string) => setF((p) => ({ ...p, [k]: v }));
+  const n = (s: string) => toNumber(s) || 0;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-5 shadow-2xl">
+        <h3 className="text-base font-bold text-slate-900">✏️ Edit Pencapaian Bulanan</h3>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <Field label="Area" value={f.area} onChange={(v: string) => set("area", v)} />
+          <Field label="Nama SDM" value={f.sdm} onChange={(v: string) => set("sdm", v)} />
+          <Field label="Potensi Toko" value={f.potensi} onChange={(v: string) => set("potensi", v)} />
+          <Field label="TA Total" value={f.taTotal} onChange={(v: string) => set("taTotal", v)} />
+          <Field label="TA NOO" value={f.taNoo} onChange={(v: string) => set("taNoo", v)} />
+          <Field label="Toko Reaktif" value={f.reaktif} onChange={(v: string) => set("reaktif", v)} />
+          <Field label="TRIP" value={f.trip} onChange={(v: string) => set("trip", v)} />
+          <Field label="TRIP Kuota" value={f.tripKuota} onChange={(v: string) => set("tripKuota", v)} />
+          <Field label="Target (TGT)" value={f.tgt} onChange={(v: string) => set("tgt", v)} />
+          <Field label="Aktual (ACT)" value={f.act} onChange={(v: string) => set("act", v)} />
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Btn c="border border-slate-300 bg-white text-slate-600" onClick={onClose}>Batal</Btn>
+          <Btn onClick={() => { const pot = n(f.potensi), ta = n(f.taTotal), tgt = n(f.tgt), act = n(f.act); onSave({ id: row.id, area: f.area.trim().toUpperCase() || row.area, sdm: f.sdm.trim(), potensi: pot, taTotal: ta, contr: pot > 0 ? (ta / pot) * 100 : 0, taNoo: n(f.taNoo), reaktif: n(f.reaktif), trip: n(f.trip), tripKuota: n(f.tripKuota), tgt, act, pcp: tgt > 0 ? (act / tgt) * 100 : 0, kejar: tgt - act }); }}>Simpan</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditMingguanModal({ row, onClose, onSave }: { row: MRow; onClose: () => void; onSave: (r: MRow) => void }) {
+  const [f, setF] = useState({ area: row.area, sdm: row.sdm, tgt: String(row.tgt), act: row.act.map(String) });
+  const set = (k: string, v: string) => setF((p) => ({ ...p, [k]: v }));
+  const n = (s: string) => toNumber(s) || 0;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-5 shadow-2xl">
+        <h3 className="text-base font-bold text-slate-900">✏️ Edit Pencapaian Mingguan</h3>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <Field label="Area" value={f.area} onChange={(v: string) => set("area", v)} />
+          <Field label="Nama SDM" value={f.sdm} onChange={(v: string) => set("sdm", v)} />
+          <Field label="TGT / Minggu" value={f.tgt} onChange={(v: string) => set("tgt", v)} />
+          {["M1", "M2", "M3", "M4", "M5"].map((m, k) => <Field key={m} label={"ACT " + m} value={f.act[k]} onChange={(v: string) => set("act", f.act.map((x, i) => (i === k ? v : x)) as any)} />)}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Btn c="border border-slate-300 bg-white text-slate-600" onClick={onClose}>Batal</Btn>
+          <Btn onClick={() => { const tgt = n(f.tgt); const act = f.act.map(n); const pct = act.map((a) => (tgt > 0 ? (a / tgt) * 100 : 0)); onSave({ id: row.id, area: f.area.trim().toUpperCase() || row.area, sdm: f.sdm.trim(), tgt, act, pct }); }}>Simpan</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BulananView({ rows, setRows, globalSdm, setGlobalSdm }: { rows: BRow[]; setRows: (r: BRow[]) => void; globalSdm: string; setGlobalSdm: (s: string) => void }) {
+  const [filter, setFilter] = useState("ALL");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pinFor, setPinFor] = useState<"" | "paste" | "clear" | "edit" | "delete">("");
+  const [editRow, setEditRow] = useState<BRow | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const areas = useMemo(() => Array.from(new Set(rows.filter((r) => r.area !== "GLOBAL").map((r) => r.area))).sort(byAreaOrder), [rows]);
+  const globalRow = useMemo(() => computeGlobal(rows, globalSdm), [rows, globalSdm]);
+  const shown = useMemo(() => {
+    const list = filter === "ALL" ? [globalRow, ...rows] : rows.filter((r) => r.area === filter);
+    return list.slice().sort((a, b) => byAreaOrder(a.area, b.area));
+  }, [rows, globalRow, filter]);
+  const g = filter === "ALL" ? globalRow : rows.find((r) => r.area === filter) || globalRow;
+  const doPaste = () => {
+    try {
+      const parsed = parseBulanan(pasteText);
+      setRows(mergeRows(rows, parsed.rows));
+      if (parsed.globalSdm) setGlobalSdm(parsed.globalSdm);
+      setPasteOpen(false); setPasteText(""); setErr("");
+      alert("Berhasil: " + parsed.rows.length + " area di-import.");
+    } catch (e: any) { setErr(e.message || "Gagal membaca data."); }
+  };
+  return (
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-bold text-slate-900 sm:text-lg">Pencapaian Bulanan</h2>
+        <div className="ml-auto flex gap-2">
+          <Btn onClick={() => setPinFor("paste")}>📋 Paste Excel</Btn>
+          <Btn c="bg-red-600 text-white" onClick={() => setPinFor("clear")}>🗑️ Hapus Semua</Btn>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+        <Pill a="ALL" active={filter === "ALL"} onClick={() => setFilter("ALL")} />
+        {areas.map((a) => <Pill key={a} a={a} active={filter === a} onClick={() => setFilter(a)} />)}
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+        <StatCard label="Target" value={fmtRpShort(g.tgt)} />
+        <StatCard label="Aktual" value={fmtRpShort(g.act)} />
+        <StatCard label="RP Kejar" value={fmtRpShort(g.kejar)} red={g.kejar < 0} />
+        <StatCard label="TA / NOO / Reaktif" value={g.taTotal + " / " + g.taNoo + " / " + g.reaktif} small />
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Card className="flex flex-col items-center p-4">
+          <Gauge value={g.pcp} label={fmtPct(g.pcp)} sublabel="PCP" caption="Aktual ÷ Target"
+            badge={g.pcp >= 111 ? "🏆 Outstanding" : g.pcp >= 101 ? "🌟 High Performer" : g.pcp >= 91 ? "✅ Target Tercapai" : g.pcp >= 85 ? "🎯 On Track" : g.pcp >= 76 ? "📉 Perlu Dorongan" : g.pcp > 0 ? "⚠️ Perlu Perhatian" : "❌ Belum Transaksi"} />
+        </Card>
+        <Card className="flex flex-col items-center p-4">
+          <Gauge value={pctOf(g.trip, g.tripKuota)} label={g.trip + " / " + g.tripKuota} sublabel="TRIP" caption="TRIP vs TRIP KUOTA"
+            color={g.trip >= g.tripKuota && g.tripKuota > 0 ? "#16a34a" : g.trip > 0 ? "#2563eb" : "#dc2626"}
+            badge={g.trip >= g.tripKuota && g.tripKuota > 0 ? "✅ Trip Selesai" : (g.tripKuota - g.trip) + " Trip Tersisa"} />
+        </Card>
+        <Card className="flex flex-col items-center p-4">
+          <Gauge value={g.contr} label={fmtPct(g.contr)} sublabel="CONTR%" caption="POTENSI vs TA TOTAL"
+            badge={g.potensi + " → " + g.taTotal} />
+        </Card>
+      </div>
+      {rows.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-500">Belum ada data — klik <b>📋 Paste Excel</b> lalu tempel dari spreadsheet (PIN 1305).</Card>
+      ) : (
+        <div className="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full min-w-[860px] text-left text-xs sm:text-sm">
+            <thead><tr>
+              <Th>NO</Th><Th>JABATAN</Th><Th>AREA</Th><Th>SDM</Th><Th>TA</Th><Th>NOO</Th><Th>REAK</Th><Th>TRIP</Th><Th>TGT</Th><Th>ACT</Th><Th>PCP</Th><Th>KEJAR</Th><Th>STATUS</Th><Th>AKSI</Th>
+            </tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {shown.map((r, i) => (
+                <tr key={r.id} className="hover:bg-blue-50/40">
+                  <Td>{i + 1}</Td>
+                  <Td>{jabatanOf(r.area)}</Td>
+                  <Td className="font-semibold">{r.area}</Td>
+                  <Td>{r.sdm}</Td>
+                  <Td>{r.taTotal}</Td>
+                  <Td>{r.taNoo}</Td>
+                  <Td>{r.reaktif}</Td>
+                  <Td>{r.trip + "/" + r.tripKuota}</Td>
+                  <Td className="whitespace-nowrap">{fmtRp(r.tgt)}</Td>
+                  <Td className="whitespace-nowrap">{fmtRp(r.act)}</Td>
+                  <Td className={"font-semibold " + (r.pcp >= 91 ? "text-green-600" : r.pcp >= 85 ? "text-yellow-600" : r.pcp > 0 ? "text-orange-600" : "text-red-600")}>{fmtPct(r.pcp)}</Td>
+                  <Td className={"whitespace-nowrap " + (r.kejar < 0 ? "text-red-600" : "")}>{fmtRp(r.kejar)}</Td>
+                  <Td><StatusBadge pcp={r.pcp} /></Td>
+                  <Td className="whitespace-nowrap">
+                    {r.area === "GLOBAL" ? <span className="text-slate-300">—</span> : (
+                      <span className="flex gap-1">
+                        <Btn c="border border-slate-300 bg-white text-blue-600" onClick={() => { setEditRow(r); setPinFor("edit"); }}>✏️</Btn>
+                        <Btn c="border border-slate-300 bg-white text-red-600" onClick={() => { setDeleteId(r.id); setPinFor("delete"); }}>🗑️</Btn>
+                      </span>
+                    )}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {pinFor === "paste" && <PinModal title="Paste Excel" message="Masukkan PIN untuk membuka paste data." onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setPasteOpen(true); }} />}
+      {pinFor === "clear" && <PinModal title="Hapus Semua" message="Semua data bulanan akan dihapus. Lanjut?" onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setRows([]); setGlobalSdm(""); }} />}
+      {pinFor === "edit" && editRow && <PinModal title="Edit Data" message="Masukkan PIN untuk mengedit data ini." onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setEditOpen(true); }} />}
+      {pinFor === "delete" && deleteId && <PinModal title="Hapus Data" message="Data ini akan dihapus. Lanjut?" onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setRows(rows.filter((r) => r.id !== deleteId)); setDeleteId(null); }} />}
+      {pasteOpen && <PasteModal title="Paste Pencapaian Bulanan" note="Salin dari Excel mulai kolom AREA. Area yang sama akan ditimpa, area lain tetap. GLOBAL dihitung otomatis dari jumlah semua area." text={pasteText} setText={setPasteText} error={err} onCancel={() => { setPasteOpen(false); setErr(""); }} onPaste={doPaste} />}
+      {editOpen && editRow && <EditBulananModal row={editRow} onClose={() => setEditOpen(false)} onSave={(u) => { setRows(rows.map((r) => (r.id === u.id ? u : r))); setEditOpen(false); }} />}
+    </div>
+  );
+}
+
+function MingguanView({ rows, setRows, globalSdm, setGlobalSdm }: { rows: MRow[]; setRows: (r: MRow[]) => void; globalSdm: string; setGlobalSdm: (s: string) => void }) {
+  const [filter, setFilter] = useState("ALL");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pinFor, setPinFor] = useState<"" | "paste" | "clear" | "edit" | "delete">("");
+  const [editRow, setEditRow] = useState<MRow | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [err, setErr] = useState("");
+  const areas = useMemo(() => Array.from(new Set(rows.filter((r) => r.area !== "GLOBAL").map((r) => r.area))).sort(byAreaOrder), [rows]);
+  const globalRow = useMemo(() => computeGlobalM(rows, globalSdm), [rows, globalSdm]);
+  const shown = useMemo(() => {
+    const list = filter === "ALL" ? rows : rows.filter((r) => r.area === filter);
+    return list.slice().sort((a, b) => byAreaOrder(a.area, b.area));
+  }, [rows, filter]);
+  const chartShown = useMemo(() => shown.filter((r) => r.area !== "GLOBAL"), [shown]);
+  const weekLabels = useMemo(() => {
+    if (!chartShown.length) return ["M1"];
+    const maxIdx = chartShown.reduce((mx, r) => Math.max(mx, r.act.length - 1), 0);
+    return Array.from({ length: maxIdx + 1 }, (_, i) => "M" + (i + 1));
+  }, [chartShown]);
+  const chartData = useMemo(() => weekLabels.map((m, k) => {
+    const pt: any = { name: m };
+    chartShown.forEach((r) => { pt[r.area] = r.act[k] || 0; });
+    return pt;
+  }), [weekLabels, chartShown]);
+  const doPaste = () => {
+    try {
+      const parsed = parseMingguan(pasteText);
+      setRows(mergeRows(rows, parsed.rows));
+      if (parsed.globalSdm) setGlobalSdm(parsed.globalSdm);
+      setPasteOpen(false); setPasteText(""); setErr("");
+      alert("Berhasil: " + parsed.rows.length + " area di-import.");
+    } catch (e: any) { setErr(e.message || "Gagal membaca data."); }
+  };
+  return (
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-bold text-slate-900 sm:text-lg">Pencapaian Mingguan</h2>
+        <div className="ml-auto flex gap-2">
+          <Btn onClick={() => setPinFor("paste")}>📋 Paste Excel</Btn>
+          <Btn c="bg-red-600 text-white" onClick={() => setPinFor("clear")}>🗑️ Hapus Semua</Btn>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+        <Pill a="ALL" active={filter === "ALL"} onClick={() => setFilter("ALL")} />
+        {areas.map((a) => <Pill key={a} a={a} active={filter === a} onClick={() => setFilter(a)} />)}
+      </div>
+      {chartShown.length > 0 && (
+        <Card className="p-3 sm:p-4">
+          <p className="mb-2 text-xs font-semibold text-slate-500">Grafik Aktual per Minggu ({weekLabels.join(", ")})</p>
+          <div className="h-56 w-full sm:h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                <YAxis tickFormatter={axisFmt} tick={{ fontSize: 10 }} width={62} />
+                <Tooltip formatter={(v: any) => fmtRp(Number(v))} />
+                {chartShown.map((r, i) => <Bar key={r.area} dataKey={r.area} fill={COLORS[i % COLORS.length]} radius={[4, 4, 0, 0]} />)}
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3 mt-2">
+            {chartShown.map((r, i) => (
+              <span key={r.area} className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                <span className="inline-block h-3 w-3 rounded" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                {r.area}
+              </span>
+            ))}
+          </div>
+        </Card>
+      )}
+      {rows.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-500">Belum ada data — klik <b>📋 Paste Excel</b> lalu tempel dari spreadsheet (PIN 1305).</Card>
+      ) : (
+        <div className="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full min-w-[700px] text-left text-xs sm:text-sm">
+            <thead><tr>
+              <Th>NO</Th><Th>JABATAN</Th><Th>AREA</Th><Th>SDM</Th><Th>TGT/MGG</Th>
+              {weekLabels.map((w) => (<Th key={w + "act"}>ACT {w}</Th>))}
+              {weekLabels.map((w) => (<Th key={w + "pct"}>{w}%</Th>))}
+            </tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {shown.map((r, i) => (
+                <tr key={r.id} className="hover:bg-blue-50/40">
+                  <Td>{i + 1}</Td>
+                  <Td>{jabatanOf(r.area)}</Td>
+                  <Td className="font-semibold">{r.area}</Td>
+                  <Td>{r.sdm}</Td>
+                  <Td className="whitespace-nowrap">{fmtRp(r.tgt)}</Td>
+                  {weekLabels.map((w, k) => (<Td key={w + "a" + k} className="whitespace-nowrap">{r.act[k] && r.act[k] > 0 ? fmtRp(r.act[k]) : <span className="text-slate-300">—</span>}</Td>))}
+                  {weekLabels.map((w, k) => (<Td key={w + "p" + k} className={"font-semibold " + (r.pct[k] >= 100 ? "text-green-600" : r.pct[k] > 0 ? "text-yellow-600" : "text-slate-400")}>{r.pct[k] ? fmtPct(r.pct[k]) : "0%"}</Td>))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {pinFor === "paste" && <PinModal title="Paste Excel" message="Masukkan PIN untuk membuka paste data." onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setPasteOpen(true); }} />}
+      {pinFor === "clear" && <PinModal title="Hapus Semua" message="Semua data mingguan akan dihapus. Lanjut?" onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setRows([]); setGlobalSdm(""); }} />}
+      {pinFor === "edit" && editRow && <PinModal title="Edit Data" message="Masukkan PIN untuk mengedit data ini." onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setEditOpen(true); }} />}
+      {pinFor === "delete" && deleteId && <PinModal title="Hapus Data" message="Data ini akan dihapus. Lanjut?" onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setRows(rows.filter((r) => r.id !== deleteId)); setDeleteId(null); }} />}
+      {pasteOpen && <PasteModal title="Paste Pencapaian Mingguan" note="Salin dari Excel mulai kolom JABATAN / AREA. Area yang sama akan ditimpa. GLOBAL dihitung otomatis." text={pasteText} setText={setPasteText} error={err} onCancel={() => { setPasteOpen(false); setErr(""); }} onPaste={doPaste} />}
+      {editOpen && editRow && <EditMingguanModal row={editRow} onClose={() => setEditOpen(false)} onSave={(u) => { setRows(rows.map((r) => (r.id === u.id ? u : r))); setEditOpen(false); }} />}
+    </div>
+  );
+}
+/* ───────── SortTh ───────── */
+function SortTh({ label, sortKey, sortCol, sortAsc, onSort }: { label: string; sortKey: string; sortCol: string; sortAsc: boolean; onSort: (k: string) => void }) {
+  const active = sortCol === sortKey;
+  return (
+    <Th className="cursor-pointer select-none whitespace-nowrap" onClick={() => onSort(sortKey)}>
+      {label}{active ? (sortAsc ? " ▲" : " ▼") : ""}
+    </Th>
+  );
+}
+/* ───────── TokoView ───────── */
+function TokoView({ rows, setRows, months, setMonths, bulananTgt }: { rows: TRow[]; setRows: (r: TRow[]) => void; months: string[]; setMonths: (m: string[]) => void; bulananTgt: number }) {
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pinFor, setPinFor] = useState<"" | "paste" | "clear">("");
+  const [err, setErr] = useState("");
+  const [fArea, setFArea] = useState("ALL");
+  const [fKab, setFKab] = useState("ALL");
+  const [fKec, setFKec] = useState("ALL");
+  const [q, setQ] = useState("");
+  const [month, setMonth] = useState("");
+  const [chartStore, setChartStore] = useState<TRow | null>(null);
+  const [page, setPage] = useState(1);
+  const [sortCol, setSortCol] = useState("");
+  const [sortAsc, setSortAsc] = useState(true);
+  const PAGE = 50;
+
+  useEffect(() => {
+    if (!month && months.length) {
+      const cur = currentMonthName();
+      setMonth(months.find((m) => m === cur || MONTH_FULL[m] === cur) || months[months.length - 1]);
+    }
+  }, [months, month]);
+
+  const areaList = useMemo(() => Array.from(new Set(rows.map((r) => r.area))).sort(), [rows]);
+  const kabList = useMemo(() => {
+    const s = new Set<string>();
+    rows.forEach((r) => { if (fArea === "ALL" || r.area === fArea) s.add(r.kab); });
+    return Array.from(s).filter(Boolean).sort();
+  }, [rows, fArea]);
+  const kecList = useMemo(() => {
+    const s = new Set<string>();
+    rows.forEach((r) => {
+      if ((fArea === "ALL" || r.area === fArea) && (fKab === "ALL" || r.kab === fKab)) s.add(r.kec);
+    });
+    return Array.from(s).filter(Boolean).sort();
+  }, [rows, fArea, fKab]);
+
+  const shown = useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (fArea !== "ALL" && r.area !== fArea) return false;
+      if (fKab !== "ALL" && r.kab !== fKab) return false;
+      if (fKec !== "ALL" && r.kec !== fKec) return false;
+      if (ql && !(r.pelanggan + " " + r.area + " " + r.kab + " " + r.kec).toLowerCase().includes(ql)) return false;
+      return true;
+    });
+  }, [rows, fArea, fKab, fKec, q]);
+
+  const sorted = useMemo(() => {
+    if (!sortCol) return shown;
+    const arr = [...shown];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      switch (sortCol) {
+        case "area": cmp = a.area.localeCompare(b.area); break;
+        case "kab": cmp = a.kab.localeCompare(b.kab); break;
+        case "kec": cmp = a.kec.localeCompare(b.kec); break;
+        case "pelanggan": cmp = a.pelanggan.localeCompare(b.pelanggan); break;
+        case "month": cmp = (month ? a.act[month] || 0 : 0) - (month ? b.act[month] || 0 : 0); break;
+        case "actVsTgt": cmp = (a.target > 0 ? ((month ? a.act[month] || 0 : 0) / a.target) * 100 : 0) - (b.target > 0 ? ((month ? b.act[month] || 0 : 0) / b.target) * 100 : 0); break;
+        case "agt": cmp = (a.target > 0 && bulananTgt > 0 ? (a.target / bulananTgt) * 100 : 0) - (b.target > 0 && bulananTgt > 0 ? (b.target / bulananTgt) * 100 : 0); break;
+        case "kontrib": {
+          const atA = rows.filter((x) => x.area === a.area).reduce((s, x) => s + x.target, 0) || 1;
+          const atB = rows.filter((x) => x.area === b.area).reduce((s, x) => s + x.target, 0) || 1;
+          cmp = (a.target / atA) - (b.target / atB);
+          break;
+        }
+        case "target": cmp = a.target - b.target; break;
+        default: cmp = 0;
+      }
+      return sortAsc ? cmp : -cmp;
+    });
+    return arr;
+  }, [shown, sortCol, sortAsc, month, bulananTgt, rows]);
+
+  const onSort = (k: string) => {
+    if (sortCol === k) setSortAsc(!sortAsc);
+    else { setSortCol(k); setSortAsc(true); }
+  };
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE));
+  const pageRows = sorted.slice((page - 1) * PAGE, page * PAGE);
+
+  useEffect(() => { setPage(1); }, [fArea, fKab, fKec, q, month]);
+
+  const actOf = (r: TRow) => (month ? r.act[month] || 0 : 0);
+  const actVsTgt = (r: TRow) => (r.target > 0 ? (actOf(r) / r.target) * 100 : 0);
+  const agtOf = (r: TRow) => (actOf(r) > 0 && bulananTgt > 0 ? (r.target / bulananTgt) * 100 : 0);
+  const areaTarget = (a: string) => rows.filter((r) => r.area === a).reduce((s, r) => s + r.target, 0);
+  const kontrArea = (r: TRow) => (r.target > 0 ? (r.target / (areaTarget(r.area) || 1)) * 100 : 0);
+  const sumAct = sorted.reduce((s, r) => s + actOf(r), 0);
+  const sumTgt = sorted.reduce((s, r) => s + r.target, 0);
+
+  const doPaste = () => {
+    try {
+      const parsed = parseToko(pasteText);
+      setRows(parsed.rows);
+      setMonths(parsed.months);
+      setPasteOpen(false); setPasteText(""); setErr("");
+      alert("Berhasil: " + parsed.rows.length + " toko di-import (" + parsed.months.length + " bulan).");
+    } catch (e: any) { setErr(e.message || "Gagal membaca data."); }
+  };
+
+  return (
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-bold text-slate-900 sm:text-lg">Target vs Act Toko</h2>
+        <div className="ml-auto flex gap-2">
+          <Btn onClick={() => setPinFor("paste")}>📋 Paste Excel</Btn>
+          <Btn c="bg-red-600 text-white" onClick={() => setPinFor("clear")}>🗑️ Hapus Semua</Btn>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+        <span className="text-xs font-semibold text-slate-500">Bulan:</span>
+        {months.map((m) => <Pill key={m} a={m} active={month === m} onClick={() => setMonth(m)} />)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={fArea} onChange={(e) => { setFArea(e.target.value); setFKab("ALL"); setFKec("ALL"); }} className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700">
+          <option value="ALL">Semua Area</option>
+          {areaList.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={fKab} onChange={(e) => { setFKab(e.target.value); setFKec("ALL"); }} className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700">
+          <option value="ALL">Semua Kabupaten</option>
+          {kabList.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select value={fKec} onChange={(e) => setFKec(e.target.value)} className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700">
+          <option value="ALL">Semua Kecamatan</option>
+          {kecList.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Cari pelanggan / area / kecamatan" className="min-w-[160px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:border-blue-500 sm:max-w-xs" />
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
+        <StatCard label="Total Toko" value={String(sorted.length)} small />
+        <StatCard label={"Total ACT " + (month || "")} value={fmtRpShort(sumAct)} small />
+        <StatCard label="Total Target" value={fmtRpShort(sumTgt)} small />
+        <StatCard label="Pencapaian" value={fmtPct(pctOf(sumAct, sumTgt))} small />
+      </div>
+      <Card className="p-3">
+        <p className="text-[11px] text-slate-500">Target Global: <b className="text-slate-700">{fmtRp(bulananTgt)}</b> · AGT = Target Toko ÷ Target Global</p>
+      </Card>
+      {rows.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-500">Belum ada data — klik <b>📋 Paste Excel</b> lalu tempel data toko dari spreadsheet.</Card>
+      ) : (
+        <>
+          <div className="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+            <table className="w-full min-w-[1150px] text-left text-xs sm:text-sm">
+              <thead><tr>
+                <Th>NO</Th>
+                <SortTh label="AREA" sortKey="area" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <SortTh label="KABUPATEN" sortKey="kab" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <SortTh label="KECAMATAN" sortKey="kec" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <Th>EXISTING</Th>
+                <SortTh label="PELANGGAN" sortKey="pelanggan" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <Th>ADM</Th>
+                <Th>KELAS TOKO</Th>
+                <Th>KELAS BYR</Th>
+                <SortTh label={month || "BULAN"} sortKey="month" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <SortTh label="ACT VS TGT" sortKey="actVsTgt" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <SortTh label="AGT" sortKey="agt" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <SortTh label="KONTRIB. AREA" sortKey="kontrib" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <SortTh label="TARGET TOKO" sortKey="target" sortCol={sortCol} sortAsc={sortAsc} onSort={onSort} />
+                <Th>GRAFIK</Th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {pageRows.map((r, i) => (
+                  <tr key={r.id} className="hover:bg-blue-50/40">
+                    <Td>{(page - 1) * PAGE + i + 1}</Td>
+                    <Td className="font-semibold">{r.area}</Td>
+                    <Td>{r.kab}</Td>
+                    <Td>{r.kec}</Td>
+                    <Td>{r.existing}</Td>
+                    <Td className="max-w-[200px]">{r.pelanggan}</Td>
+                    <Td>{r.adm}</Td>
+                    <Td>{r.kelasToko}</Td>
+                    <Td>{r.kelasByr}</Td>
+                    <Td className="whitespace-nowrap">{actOf(r) > 0 ? fmtRp(actOf(r)) : <span className="text-slate-300">—</span>}</Td>
+                    <Td className={"font-semibold " + (actVsTgt(r) >= 100 ? "text-green-600" : actVsTgt(r) > 0 ? "text-yellow-600" : "text-red-600")}>{fmtPct(actVsTgt(r))}</Td>
+                    <Td>{fmtPct(agtOf(r), 2)}</Td>
+                    <Td>{fmtPct(kontrArea(r), 2)}</Td>
+                    <Td className="whitespace-nowrap">{fmtRp(r.target)}</Td>
+                    <Td><Btn c="border border-slate-300 bg-white text-blue-600" onClick={() => setChartStore(r)}>📈</Btn></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-slate-500">{sorted.length} toko · halaman {page}/{pageCount}</p>
+            <div className="flex gap-2">
+              <Btn c="border border-slate-300 bg-white text-slate-600" onClick={() => setPage(Math.max(1, page - 1))}>← Sebelumnya</Btn>
+              <Btn c="border border-slate-300 bg-white text-slate-600" onClick={() => setPage(Math.min(pageCount, page + 1))}>Berikutnya →</Btn>
+            </div>
+          </div>
+        </>
+      )}
+      {pinFor === "paste" && <PinModal title="Paste Excel" message="Masukkan PIN untuk membuka paste data." onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setPasteOpen(true); }} />}
+      {pinFor === "clear" && <PinModal title="Hapus Semua" message="Semua data toko akan dihapus. Lanjut?" onCancel={() => setPinFor("")} onOk={() => { setPinFor(""); setRows([]); setMonths([]); setMonth(""); }} />}
+      {pasteOpen && <PasteModal title="Paste Target vs Act Toko" note="Salin dari Excel mulai kolom AREA. Data toko akan diganti total. Bulan terdeteksi otomatis." text={pasteText} setText={setPasteText} error={err} onCancel={() => { setPasteOpen(false); setErr(""); }} onPaste={doPaste} />}
+      {chartStore && <StoreChartModal row={chartStore} months={Object.keys(chartStore.act).sort((a, b) => MONTH_ORDER.indexOf(a) - MONTH_ORDER.indexOf(b))} onClose={() => setChartStore(null)} />}
+    </div>
+  );
+}
+/* ───────── EkspedisiView ───────── */
+function EkspedisiView() {
+  const [rows, setRows] = useState<string[][]>([]);
+  const [photos, setPhotos] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [last, setLast] = useState("");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ekspedisi", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal mengambil data.");
+      setRows(data.rows || []);
+      setPhotos(data.photos || {});
+      setLast(new Date().toLocaleTimeString("id-ID"));
+      setErr("");
+    } catch (e: any) {
+      setErr(e.message || "Gagal mengambil data dari spreadsheet.");
+    } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, [load]);
+  const items = useMemo(() => {
+    if (!rows.length) return [];
+    const h = rows[0].map((c) => norm(c));
+    const idx = (k: string) => h.findIndex((x) => x === k);
+    const iTgl = idx("TANGGAL"), iJam = idx("JAM"), iKat = idx("KATEGORI"), iToko = idx("NAMATOKO"), iDrv = idx("NAMADRIVER"), iHlp = idx("NAMAHELPER"), iArm = idx("ARMADA"), iBay = idx("BAYAR"), iTyp = idx("TYPEBYR"), iTun = idx("TUNAI"), iTrf = idx("TRANSFER"), iFot = idx("FOTOUANG"), iPod = idx("POD"), iRet = idx("INFORETUR"), iKet = idx("KETERANGAN"), iGps = idx("GPS");
+    return rows.slice(1).filter((r) => r.some((c) => c.trim() !== "")).map((r) => ({
+      tgl: (r[iTgl] || "").trim(), jam: (r[iJam] || "").trim(), kategori: (r[iKat] || "").trim(), toko: (r[iToko] || "").trim(), driver: (r[iDrv] || "").trim(), helper: (r[iHlp] || "").trim(), armada: (r[iArm] || "").trim() || "—", bayar: (r[iBay] || "").trim(), type: (r[iTyp] || "").trim(), tunai: toNumber(r[iTun] || "") || 0, transfer: toNumber(r[iTrf] || "") || 0, foto: (r[iFot] || "").trim(), pod: (r[iPod] || "").trim(), retur: (r[iRet] || "").trim(), ket: (r[iKet] || "").trim(), gps: (r[iGps] || "").trim(),
+    }));
+  }, [rows]);
+  const totalAll = useMemo(() => items.reduce((s, it) => s + it.tunai, 0), [items]);
+  const perKategori = useMemo(() => {
+    const m = new Map<string, number>();
+    items.forEach((it) => { const k = it.kategori || "—"; m.set(k, (m.get(k) || 0) + it.tunai); });
+    return Array.from(m.entries()).map(([kategori, total]) => ({ kategori, total }));
+  }, [items]);
+  const perArmada = useMemo(() => {
+    const m = new Map<string, { prima: number; ecer: number; total: number }>();
+    items.forEach((it) => {
+      const e = m.get(it.armada) || { prima: 0, ecer: 0, total: 0 };
+      const k = (it.kategori || "").toLowerCase();
+      if (k === "prima") e.prima += it.tunai; else if (k === "ecer") e.ecer += it.tunai;
+      e.total += it.tunai;
+      m.set(it.armada, e);
+    });
+    return Array.from(m.entries()).map(([armada, v]) => ({ armada, ...v }));
+  }, [items]);
+  const groups = useMemo(() => {
+    const m = new Map<string, typeof items>();
+    items.forEach((it) => { if (!m.has(it.armada)) m.set(it.armada, []); m.get(it.armada)!.push(it); });
+    return Array.from(m.entries()).map(([armada, list]) => ({ armada, list, sub: list.reduce((s, it) => s + it.tunai, 0) }));
+  }, [items]);
+  const mapsUrl = (gps: string) => {
+    if (!gps) return "";
+    if (gps.startsWith("http")) return gps;
+    const g = gps.replace(/\s/g, "");
+    return g.includes(",") ? "https://www.google.com/maps?q=" + encodeURIComponent(g) : "";
+  };
+  const fotoOf = (foto: string) => {
+    if (!foto) return null;
+    const raw = foto.split("/").pop() || foto;
+    const fn = raw.trim();
+    const id = photos[fn];
+    if (id) return { thumb: "https://drive.google.com/thumbnail?id=" + id + "&sz=w800", open: "https://drive.google.com/open?id=" + id };
+    return null;
+  };
+  const FotoCell = ({ foto }: { foto: string }) => {
+    const f = fotoOf(foto);
+    if (f) return <a href={f.open} target="_blank" rel="noreferrer"><img src={f.thumb} alt="bukti" loading="lazy" className="h-12 w-12 rounded border object-cover" /></a>;
+    return <span className="text-slate-300">{foto ? <span className="break-all text-[10px] text-slate-400">{foto}</span> : "—"}</span>;
+  };
+  const GpsCell = ({ gps }: { gps: string }) => {
+    if (!gps) return <span className="text-slate-300">—</span>;
+    const u = mapsUrl(gps);
+    return u ? <a href={u} target="_blank" rel="noreferrer" className="break-all text-[10px] text-blue-600 underline">📍 {gps}</a> : <span className="break-all text-[10px] text-slate-500">{gps}</span>;
+  };
+  return (
+    <div className="space-y-3 sm:space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-bold text-slate-900 sm:text-lg">Laporan Ekspedisi</h2>
+        <div className="ml-auto flex gap-2">
+          <Btn c="border border-slate-300 bg-white text-blue-600" onClick={load}>🔄 Refresh</Btn>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+        <span className={loading ? "text-blue-600" : "text-green-600"}>{loading ? "⏳ Memuat dari spreadsheet..." : "● Terhubung ke spreadsheet"}</span>
+        {last && <span>· Terakhir diperbarui: {last}</span>}
+        <span>· Auto-refresh tiap 1 menit</span>
+      </div>
+      {err && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-600">{err}</div>}
+      {items.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-500">Spreadsheet kosong — belum ada data pengiriman.</Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-3">
+            <StatCard label="TOTAL ALL (TUNAI)" value={fmtRp(totalAll)} />
+            <StatCard label="Total Pengiriman" value={String(items.length) + " kiriman"} small />
+            <StatCard label="Jumlah Armada" value={String(groups.length)} small />
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <Card className="p-4">
+              <p className="mb-2 text-xs font-semibold text-slate-500">PER KATEGORI</p>
+              <table className="w-full text-left text-xs sm:text-sm">
+                <thead><tr><Th>KATEGORI</Th><Th>TOTAL</Th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {perKategori.map((k) => (
+                    <tr key={k.kategori}><Td className="font-semibold">{k.kategori}</Td><Td className="whitespace-nowrap">{fmtRp(k.total)}</Td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+            <Card className="p-4">
+              <p className="mb-2 text-xs font-semibold text-slate-500">PER ARMADA (Prima vs Ecer)</p>
+              <div className="max-h-[70vh] overflow-auto">
+                <table className="w-full min-w-[380px] text-left text-xs sm:text-sm">
+                  <thead><tr><Th>ARMADA</Th><Th>PRIMA</Th><Th>ECER</Th><Th>TOTAL</Th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {perArmada.map((a) => (
+                      <tr key={a.armada}>
+                        <Td className="font-semibold">{a.armada}</Td>
+                        <Td className="whitespace-nowrap">{fmtRp(a.prima)}</Td>
+                        <Td className="whitespace-nowrap">{fmtRp(a.ecer)}</Td>
+                        <Td className="whitespace-nowrap font-semibold">{fmtRp(a.total)}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-slate-500">DETAIL PENGIRIMAN ({items.length} pengiriman)</p>
+            {groups.map((g) => (
+              <Card key={g.armada} className="overflow-hidden">
+                <button onClick={() => setExpanded((p) => ({ ...p, [g.armada]: !p[g.armada] }))} className="flex w-full items-center justify-between gap-2 bg-slate-50 px-4 py-2.5 text-left hover:bg-slate-100">
+                  <span className="flex items-center gap-2 text-sm font-bold text-slate-800"><span className="text-slate-400">{expanded[g.armada] ? "▼" : "▶"}</span>🚚 {g.armada}</span>
+                  <span className="text-xs text-slate-500">{g.list.length} kiriman · <b className="text-slate-700">{fmtRp(g.sub)}</b></span>
+                </button>
+                {expanded[g.armada] && (
+                  <div className="max-h-[70vh] overflow-auto">
+                    <table className="w-full min-w-[1400px] text-left text-xs sm:text-sm">
+                      <thead><tr>
+                        <Th>TANGGAL</Th><Th>JAM</Th><Th>KATEGORI</Th><Th>NAMA TOKO</Th><Th>DRIVER</Th><Th>HELPER</Th><Th>ARMADA</Th><Th>BAYAR</Th><Th>TYPE BYR</Th><Th>TUNAI</Th><Th>TRANSFER</Th><Th>FOTO UANG</Th><Th>POD</Th><Th>RETUR</Th><Th>KETERANGAN</Th><Th>GPS</Th>
+                      </tr></thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {g.list.map((it, i) => (
+                          <tr key={i} className="hover:bg-blue-50/40">
+                            <Td className="whitespace-nowrap">{it.tgl}</Td><Td>{it.jam}</Td>
+                            <Td><span className={"rounded-full px-2 py-0.5 text-[10px] font-semibold " + (it.kategori.toLowerCase() === "prima" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700")}>{it.kategori}</span></Td>
+                            <Td className="max-w-[180px]">{it.toko}</Td><Td>{it.driver}</Td><Td>{it.helper}</Td><Td>{it.armada}</Td>
+                            <Td>{it.bayar}</Td><Td>{it.type}</Td>
+                            <Td className="whitespace-nowrap font-semibold">{it.tunai > 0 ? fmtRp(it.tunai) : <span className="text-slate-300">—</span>}</Td>
+                            <Td className="whitespace-nowrap">{it.transfer > 0 ? fmtRp(it.transfer) : <span className="text-slate-300">—</span>}</Td>
+                            <Td><FotoCell foto={it.foto} /></Td>
+                            <Td><FotoCell foto={it.pod} /></Td>
+                            <Td>{it.retur}</Td><Td className="max-w-[160px]">{it.ket}</Td>
+                            <Td><GpsCell gps={it.gps} /></Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ───────── Home ───────── */
+export default function Home() {
+  const [view, setView] = useState("bulanan");
+  const [collapsed, setCollapsed] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [bulanan, setBulanan] = useState<BRow[]>([]);
+  const [globalSdm, setGlobalSdm] = useState("");
+  const [mingguan, setMingguan] = useState<MRow[]>([]);
+  const [mingguSdm, setMingguSdm] = useState("");
+  const [toko, setToko] = useState<TRow[]>([]);
+  const [tokoMonths, setTokoMonths] = useState<string[]>([]);
+  const payloadRef = useRef<any>(null);
+  const payload = useMemo(() => ({ bulanan: { rows: bulanan, globalSdm }, mingguan: { rows: mingguan, globalSdm: mingguSdm }, toko: { rows: toko, months: tokoMonths } }), [bulanan, globalSdm, mingguan, mingguSdm, toko, tokoMonths]);
+  const bulananTgt = useMemo(() => computeGlobal(bulanan, globalSdm).tgt, [bulanan, globalSdm]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let p: any = null;
+      if (supabase) { try { const { data } = await supabase.from("app_data").select("payload").eq("id", "main").maybeSingle(); if (data?.payload) p = data.payload; } catch { /* offline */ } }
+      if (!p) { try { const raw = localStorage.getItem("db_all"); if (raw) p = JSON.parse(raw); } catch { /* abaikan */ } }
+      if (cancelled) return;
+      if (p) {
+        setBulanan(p.bulanan?.rows || []); setGlobalSdm(p.bulanan?.globalSdm || "");
+        setMingguan(p.mingguan?.rows || []); setMingguSdm(p.mingguan?.globalSdm || "");
+        setToko(p.toko?.rows || []); setTokoMonths(p.toko?.months || []);
+      }
+      setLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!loaded) return;
+    payloadRef.current = payload;
+    try { localStorage.setItem("db_all", JSON.stringify(payload)); } catch { /* abaikan */ }
+    if (supabase) { (async () => { try { await supabase.from("app_data").upsert({ id: "main", payload, updated_at: new Date().toISOString() }); } catch { /* abaikan */ } })(); }
+  }, [loaded, payload]);
+  useEffect(() => {
+    if (!loaded || !supabase) return;
+    const ch = supabase.channel("app-sync")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "app_data", filter: "id=eq.main" }, (msg: any) => {
+        const p = msg.new?.payload;
+        if (!p) return;
+        if (payloadRef.current && JSON.stringify(p) === JSON.stringify(payloadRef.current)) return;
+        setBulanan(p.bulanan?.rows || []); setGlobalSdm(p.bulanan?.globalSdm || "");
+        setMingguan(p.mingguan?.rows || []); setMingguSdm(p.mingguan?.globalSdm || "");
+        setToko(p.toko?.rows || []); setTokoMonths(p.toko?.months || []);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [loaded]);
+  const NAV = [
+    { key: "bulanan", label: "Pencapaian Bulanan", icon: "📊" },
+    { key: "mingguan", label: "Pencapaian Mingguan", icon: "📈" },
+    { key: "toko", label: "Target vs Act Toko", icon: "🏪" },
+    { key: "ekspedisi", label: "Ekspedisi", icon: "🚚" },
+  ];
+  const title = NAV.find((n) => n.key === view)?.label || "";
+  return (
+    <div className="min-h-screen bg-slate-100">
+      <style>{`@media print { main { margin-left: 0 !important; } }`}</style>
+      {menuOpen && <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={() => setMenuOpen(false)} />}
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-slate-900 text-slate-100 transition-transform duration-200 ${menuOpen ? "translate-x-0" : "-translate-x-full"} ${collapsed ? "md:w-16" : "md:w-60"} md:translate-x-0`}>
+        <div className={`flex items-center gap-3 border-b border-slate-700/60 px-4 py-3 ${collapsed ? "md:justify-center md:px-2" : ""}`}>
+          <img src="/logo.png" alt="logo" className="h-9 w-9 rounded-lg bg-white object-contain" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+          {!collapsed && (
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold">Laporan Performa</p>
+              <p className="truncate text-xs text-slate-400">Marketing PMD</p>
+            </div>
+          )}
+        </div>
+        <nav className="flex-1 space-y-1 px-2 py-3">
+          {NAV.map((n) => (
+            <button key={n.key} onClick={() => { setView(n.key); setMenuOpen(false); }} className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium ${view === n.key ? "bg-blue-600 text-white" : "text-slate-300 hover:bg-slate-800"}`}>
+              <span>{n.icon}</span>
+              {!collapsed && <span className="truncate">{n.label}</span>}
+            </button>
+          ))}
+        </nav>
+        <div className="border-t border-slate-700/60 p-3">
+          <button onClick={() => setCollapsed(!collapsed)} className="hidden w-full items-center justify-center rounded-lg bg-slate-800 px-2 py-2 text-xs text-slate-300 hover:bg-slate-700 md:flex">
+            {collapsed ? "⏩" : "⏪"}
+          </button>
+        </div>
+      </aside>
+      <div className={`min-h-screen transition-all duration-200 ${collapsed ? "md:ml-16" : "md:ml-60"}`}>
+        <header className="no-print sticky top-0 z-20 flex items-center gap-3 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur">
+          <button className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-slate-700 md:hidden" onClick={() => setMenuOpen(true)}>☰</button>
+          <h1 className="truncate text-base font-bold text-slate-900 sm:text-lg">{title}</h1>
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => window.print()} className="no-print rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100">🖨️ Cetak</button>
+          </div>
+        </header>
+        <main className="p-3 sm:p-5">
+          {view === "bulanan" && <BulananView rows={bulanan} setRows={setBulanan} globalSdm={globalSdm} setGlobalSdm={setGlobalSdm} />}
+          {view === "mingguan" && <MingguanView rows={mingguan} setRows={setMingguan} globalSdm={mingguSdm} setGlobalSdm={setMingguSdm} />}
+          {view === "toko" && <TokoView rows={toko} setRows={setToko} months={tokoMonths} setMonths={setTokoMonths} bulananTgt={bulananTgt} />}
+          {view === "ekspedisi" && <EkspedisiView />}
+        </main>
+      </div>
+    </div>
+  );
+}
