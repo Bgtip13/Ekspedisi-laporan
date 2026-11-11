@@ -2,12 +2,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Item, PhotoMap, Range } from "./types";
 import { rowsToItems } from "./parse";
-import { DateMode, dayISO, detectMode, isoLocal, parseDate, toNumber } from "./utils";
+import { DateMode, dayISO, detectMode, parseDate, shiftISO, toNumber } from "./utils";
 
 // Endpoint Apps Script yang sama dengan versi lama (centang & edit tunai tetap tertulis ke sheet)
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIKbUY23rS_3PbJydzZlVjEhLz0ItF6jNbxenmoZL39_TFXuYw0RfZqCgrmK64pKw/exec";
 
-export type Preset = "all" | "yesterday" | "today" | "7" | "30" | "month" | "custom";
+export type Preset = "yesterday" | "today" | "custom";
 
 export function useReport() {
   /* ── data ── */
@@ -69,30 +69,14 @@ export function useReport() {
   const mode: DateMode = dateMode === "auto" ? detectedMode : dateMode;
   const dt = useCallback((s: string) => parseDate(s, mode), [mode]);
 
-  const [tglAwal, setTglAwal] = useState("");
-  const [tglAkhir, setTglAkhir] = useState("");
-  const [preset, setPreset] = useState<Preset>("yesterday");
+  const [tgl, setTgl] = useState("");
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { const y = dayISO(-1); setTglAwal(y); setTglAkhir(y); }, []);
-
-  const applyPreset = (p: Preset) => {
-    setPreset(p);
-    const now = new Date();
-    if (p === "all") { setTglAwal(""); setTglAkhir(""); }
-    else if (p === "yesterday") { const s = dayISO(-1); setTglAwal(s); setTglAkhir(s); }
-    else if (p === "today") { const s = dayISO(0); setTglAwal(s); setTglAkhir(s); }
-    else if (p === "7") { const d = new Date(now); d.setDate(d.getDate() - 6); setTglAwal(isoLocal(d)); setTglAkhir(isoLocal(now)); }
-    else if (p === "30") { const d = new Date(now); d.setDate(d.getDate() - 29); setTglAwal(isoLocal(d)); setTglAkhir(isoLocal(now)); }
-    else if (p === "month") { setTglAwal(isoLocal(new Date(now.getFullYear(), now.getMonth(), 1))); setTglAkhir(isoLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0))); }
-  };
-  const setCustom = (a: string, b: string) => { setTglAwal(a); setTglAkhir(b); setPreset("custom"); };
-
-  const range: Range = useMemo(() => {
-    let a = tglAwal, b = tglAkhir;
-    if (a && b && a > b) [a, b] = [b, a];
-    return { a, b };
-  }, [tglAwal, tglAkhir]);
-  const rangeActive = !!(range.a || range.b);
+  useEffect(() => { setTgl(dayISO(-1)); }, []);
+  const preset: Preset = tgl === dayISO(-1) ? "yesterday" : tgl === dayISO(0) ? "today" : "custom";
+  const applyPreset = (p: Preset) => { if (p === "yesterday") setTgl(dayISO(-1)); else if (p === "today") setTgl(dayISO(0)); };
+  const shiftDay = (n: number) => setTgl((t) => shiftISO(t || dayISO(-1), n));
+  const range: Range = useMemo(() => ({ a: tgl, b: tgl }), [tgl]);
+  const rangeActive = !!tgl;
 
   const filtered = useMemo(() => items.filter((it) => {
     if (!rangeActive) return true;
@@ -108,7 +92,7 @@ export function useReport() {
     loading, refreshing, err, last, refresh, photos,
     items, filtered, hiddenNoDate, dt,
     checked, toggleCheck, toggleCheckAll, getTunai, saveTunai, tunaiEdit,
-    range, rangeActive, preset, applyPreset, setCustom, dateMode, setDateMode, detectedMode,
+    tgl, setTgl, shiftDay, range, rangeActive, preset, applyPreset, dateMode, setDateMode, detectedMode,
   };
 }
 export type Report = ReturnType<typeof useReport>;
