@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
 
 const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSv4YvcmiT6ThR4FS4F6znSo7GSWOJ5hN4radzDrqMyikF2yisZybIMYSng9vgi6TAPUbD5mbKGXMJL/pub?gid=794983242&single=true&output=csv";
-const DRIVE_API_KEY = "AIzaSyBp69hmKc1s7jtoUvXG8EtQUn5SdZXWqVw";
+// Sebaiknya diisi lewat environment variable (Netlify/Vercel). Nilai lama dipertahankan sebagai cadangan agar tidak putus.
+const DRIVE_API_KEY = process.env.DRIVE_API_KEY || "AIzaSyBp69hmKc1s7jtoUvXG8EtQUn5SdZXWqVw";
 const FOLDER_ID_FOTO = "1n0rx70MJ9X6zUbinPVEHFHMJR8miOpvg";
 const FOLDER_ID_POD = "1yhZvZdVT-ZdfrOjgQbuc1yxZko1hxc6Q";
 
@@ -31,9 +32,9 @@ async function getDriveMap(folderId: string): Promise<Record<string, string>> {
     const url = "https://www.googleapis.com/drive/v3/files?q=%27" + folderId + "%27%20in%20parents&fields=files(id,name)&pageSize=1000&key=" + DRIVE_API_KEY;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return {};
-    const data: any = await res.json();
+    const data: { files?: { id: string; name?: string }[] } = await res.json();
     const map: Record<string, string> = {};
-    (data.files || []).forEach((f: any) => { if (f.name) map[f.name.trim()] = f.id; });
+    (data.files || []).forEach((f) => { if (f.name) map[f.name.trim()] = f.id; });
     return map;
   } catch { return {}; }
 }
@@ -48,7 +49,7 @@ export async function GET() {
     if (!csvRes.ok) return Response.json({ rows: [], error: "Spreadsheet gagal diambil (HTTP " + csvRes.status + ")" }, { status: 502 });
     const photos: Record<string, string> = { ...fotos, ...pods };
     return Response.json({ rows: parseCSV(await csvRes.text()), photos, updated: new Date().toISOString() });
-  } catch (e: any) {
-    return Response.json({ rows: [], error: String(e?.message || e) }, { status: 500 });
+  } catch (e) {
+    return Response.json({ rows: [], error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
 }
