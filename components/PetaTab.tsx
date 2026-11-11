@@ -65,7 +65,7 @@ export function PetaTab({ r }: { r: Report }) {
       ) : (
         <>
           <Card className="no-print p-3">
-            <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Pilih rute · {routes.length} rute, {totalGps} titik</p>
+            <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">Pilih rute kiriman · {routes.length} rute, {totalGps} titik</p>
             <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
               {routes.map((x) => (
                 <button key={x.id} type="button" onClick={() => { setSel(x.id); setActive(null); }}
