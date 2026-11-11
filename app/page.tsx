@@ -4,13 +4,15 @@ import { useReport } from "@/lib/useReport";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui";
 import { DashboardTab } from "@/components/DashboardTab";
-import { RincianTab } from "@/components/RincianTab";
+import { ChecklistTab } from "@/components/ChecklistTab";
+import { BayarTab } from "@/components/BayarTab";
 import { PetaTab } from "@/components/PetaTab";
 
 const TABS = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
-  { id: "rincian", label: "Rincian Toko", icon: "store" },
-  { id: "peta", label: "Peta Rute", icon: "map" },
+  { id: "ceklist", label: "Ceklist Kiriman", icon: "clipboard" },
+  { id: "bayar", label: "Rincian Bayar", icon: "wallet" },
+  { id: "rute", label: "Rute Kiriman", icon: "map" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -36,7 +38,7 @@ export default function Home() {
           <nav className="mx-auto hidden gap-1 rounded-xl bg-slate-100 p-1 md:flex" aria-label="Menu utama">
             {TABS.map((t) => (
               <button key={t.id} type="button" onClick={() => setTab(t.id)} aria-current={tab === t.id ? "page" : undefined}
-                className={cn("flex items-center gap-2 rounded-lg px-4 py-1.5 text-xs font-semibold transition", tab === t.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
+                className={cn("flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-semibold transition lg:px-4", tab === t.id ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")}>
                 <Icon name={t.icon} className="h-4 w-4" />{t.label}
               </button>
             ))}
@@ -78,8 +80,9 @@ export default function Home() {
         ) : (
           <div key={tab} className="panel-in">
             {tab === "dashboard" && <DashboardTab r={r} />}
-            {tab === "rincian" && <RincianTab r={r} />}
-            {tab === "peta" && <PetaTab r={r} />}
+            {tab === "ceklist" && <ChecklistTab r={r} />}
+            {tab === "bayar" && <BayarTab r={r} />}
+            {tab === "rute" && <PetaTab r={r} />}
           </div>
         )}
 
@@ -88,10 +91,10 @@ export default function Home() {
 
       {/* Navigasi bawah untuk HP */}
       <nav className="no-print fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden" aria-label="Menu utama">
-        <div className="grid grid-cols-3">
+        <div className="grid grid-cols-4">
           {TABS.map((t) => (
             <button key={t.id} type="button" onClick={() => { setTab(t.id); window.scrollTo({ top: 0 }); }} aria-current={tab === t.id ? "page" : undefined}
-              className={cn("flex flex-col items-center gap-0.5 py-2 text-[11px] font-semibold transition", tab === t.id ? "text-slate-900" : "text-slate-400")}>
+              className={cn("flex flex-col items-center gap-0.5 py-2 text-[10px] font-semibold leading-tight transition", tab === t.id ? "text-slate-900" : "text-slate-400")}>
               <span className={cn("grid h-7 w-12 place-items-center rounded-full transition", tab === t.id && "bg-slate-900 text-white")}><Icon name={t.icon} className="h-4 w-4" /></span>
               {t.label}
             </button>
